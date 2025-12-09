@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Medical Robot & Temi Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        body { background-color: #1a1a1a; color: white; font-family: sans-serif; text-align: center; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 10px; display: flex; flex-wrap: wrap; justify-content: center; gap: 20px;}
+        .col { flex: 1; min-width: 300px; background: #333; padding: 15px; border-radius: 10px; }
+        img { border: 3px solid #555; width: 100%; border-radius: 8px; }
+
+        h3 { border-bottom: 1px solid #555; padding-bottom: 10px; margin-top: 0;}
+        input, select { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; border-radius: 4px; border: none;}
+
+        button { padding: 12px; font-size: 1rem; border-radius: 4px; cursor: pointer; border: none; margin: 5px 2px; color: white; width: 48%; }
+        .btn-move { background-color: #007bff; }
+        .btn-capture { background-color: #28a745; width: 100%; font-weight: bold; margin-top: 10px;}
+        .btn-temi { background-color: #e83e8c; }
+
+        .log-box { font-family: monospace; color: #0f0; background: #000; padding: 10px; border-radius: 5px; min-height: 40px; margin-top: 10px;}
+    </style>
+</head>
+<body onload="initTemi()">
+    <h1>Medical Robot & Temi Interface</h1>
+
+    <div class="container">
+        <div class="col">
+            <img src="{{ url_for('video_feed') }}">
+            <h3>DICOM Capture</h3>
+            <div id="patient-summary" style="background:#222; padding:8px; border-radius:4px; margin-bottom:10px; font-size:0.9em;">No patient data loaded</div>
+            <select id="detection-mode" onchange="setDetectionMode()">
+                <option value="haar_fast">Haar Fast (Low Latency)</option>
+                <option value="haar_balanced" selected>Haar Balanced</option>
+                <option value="haar_accurate">Haar Accurate (High Latency)</option>
+            </select>
+            <button class="btn-capture" onclick="toggleDetection()" id="detection-btn">Enable Detection</button>
+            <button class="btn-capture" onclick="toggleAnomalyDetection()" id="anomaly-btn" style="background-color: #ffc107;">Enable Anomaly Detection</button>
+            <input type="text" id="p_name" placeholder="Patient Name">
+            <input type="number" id="p_age" placeholder="Patient Age" min="0" max="150">
+            <input type="text" id="p_id" placeholder="Patient ID">
+            <select id="p_sex">
+                <option value="O">Other</option>
+                <option value="M">Male</option>
+                <option value="F">Female</option>
+            </select>
+            <button class="btn-capture" onclick="scanQR()">Scan QR Code</button>
+            <button class="btn-capture" onclick="clearPatientData()" style="background-color: #6c757d;">Clear Patient Data</button>
+            <canvas id="qr-canvas" style="display:none;"></canvas>
+            <button class="btn-capture" onclick="capture()">CAPTURE DICOM</button>
+            <div id="dicom-log" class="log-box">System Ready</div>
+        </div>
+
+        <div class="col">
+            <h3>Camera Arm Control</h3>
+            <svg id="arm-svg" width="200" height="200" style="border: 1px solid #555; background: #222;"></svg>
+            <br>
+            <label>Base Arm (Motor 1): <span id="m1-current">0</span>° (target: <span id="m1-target">0</span>°)</label>
+            <input type="range" id="m1-slider" min="-20" max="20" value="0" step="1">
+            <br>
+            <label>Top Arm (Motor 2): <span id="m2-current">0</span>° (target: <span id="m2-target">0</span>°)</label>
+            <input type="range" id="m2-slider" min="-90" max="90" value="0" step="1">
+            <br>
+            <button class="btn-move" onclick="resetArm()">Reset to Upright</button>
+            <button class="btn-move" onclick="tareArm()">Tare Position</button>
+            <button class="btn-move" style="background-color: #dc3545;" onclick="emergencyStop()">EMERGENCY STOP</button>
+            <div id="motor-log" class="log-box">Arm at 0° (target 0°), 0° (target 0°)</div>
+        </div>
+
+        <div class="col">
+            <h3>Temi Robot Control</h3>
+
+            <label>Joystick Control:</label>
+            <div id="joystick-area" style="width:180px;height:180px;margin:10px auto;border-radius:12px;background:#111;border:2px solid #444;touch-action:none;position:relative;">
+                <div id="joystick-knob" style="width:60px;height:60px;border-radius:50%;background:#e83e8c;position:absolute;left:60px;top:60px;box-shadow:0 4px 8px rgba(0,0,0,0.6)"></div>
+            </div>
+            <div style="font-size:0.9rem;color:#ccc;margin-bottom:8px;">Drag knob to move Temi (relative). Release to stop.</div>
+
+            <label>Text to Speech:</label>
+            <input type="text" id="temi-tts" placeholder="Hello world...">
+            <button class="btn-temi" style="width:100%" onclick="temiSpeak()">Speak</button>
+            <hr style="border-color:#555">
+
+            <label>Navigation:</label>
+            <select id="temi-locations">
+                <option>Loading locations...</option>
+            </select>
+            <button class="btn-temi" style="width:100%" onclick="temiGoto()">Go to Location</button>
+            <hr style="border-color:#555">
+
+            <label>Rotate:</label><br>
+            <button class="btn-temi" onclick="temiRotate(30)">Rotate Left 30&deg;</button>
+            <button class="btn-temi" onclick="temiRotate(-30)">Rotate Right 30&deg;</button>
+
+            <div id="temi-log" class="log-box">Checking Temi...</div>
+        </div>
+    </div>
+
+    <script>
+        let m1_angle = 0;
+        let m2_angle = 0;
+
+        function drawArm() {
+            const svg = document.getElementById('arm-svg');
+            svg.innerHTML = '';
+            const width = 200, height = 200;
+            const baseX = width / 2, baseY = height - 20;
+            const L = 80; // Both arms same length
+
+            // Segment 1 (base arm, motor 1) - absolute angle
+            const theta1 = (m1_angle * Math.PI) / 180;
+            const x1 = baseX + L * Math.sin(theta1);
+            const y1 = baseY - L * Math.cos(theta1);
+
+            // Segment 2 (top arm, motor 2) - attached to end of base arm
+            const theta2 = (m2_angle * Math.PI) / 180;
+            const x2 = x1 + L * Math.sin(theta2);
+            const y2 = y1 - L * Math.cos(theta2);
+
+            // Draw
+            const line1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line1.setAttribute('x1', baseX);
+            line1.setAttribute('y1', baseY);
+            line1.setAttribute('x2', x1);
+            line1.setAttribute('y2', y1);
+            line1.setAttribute('stroke', '#0f0'); // Green for base arm (motor 1)
+            line1.setAttribute('stroke-width', '4');
+            svg.appendChild(line1);
+
+            const line2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line2.setAttribute('x1', x1);
+            line2.setAttribute('y1', y1);
+            line2.setAttribute('x2', x2);
+            line2.setAttribute('y2', y2);
+            line2.setAttribute('stroke', '#00f'); // Blue for top arm (motor 2)
+            line2.setAttribute('stroke-width', '4');
+            svg.appendChild(line2);
+
+            // Joints
+            const circle1 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle1.setAttribute('cx', baseX);
+            circle1.setAttribute('cy', baseY);
+            circle1.setAttribute('r', '6');
+            circle1.setAttribute('fill', '#555');
+            svg.appendChild(circle1);
+
+            // End points
+            const circle2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle2.setAttribute('cx', x1);
+            circle2.setAttribute('cy', y1);
+            circle2.setAttribute('r', '4');
+            circle2.setAttribute('fill', '#777');
+            svg.appendChild(circle2);
+
+            const circle3 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle3.setAttribute('cx', x2);
+            circle3.setAttribute('cy', y2);
+            circle3.setAttribute('r', '3');
+            circle3.setAttribute('fill', '#999');
+            svg.appendChild(circle3);
+        }
+
+        function updateAngle(motor, angle) {
+            document.getElementById(`${motor}-slider`).value = angle;
+            document.getElementById(`${motor}-target`).innerText = angle.toFixed(1);
+            fetch('/set_angle', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({motor: motor, angle: angle})
+            });
+        }
+
+        function resetArm() {
+            document.getElementById('m1-target').innerText = '0.0';
+            document.getElementById('m2-target').innerText = '0.0';
+            document.getElementById('m1-slider').value = 0;
+            document.getElementById('m2-slider').value = 0;
+            fetch('/reset_angles');
+        }
+
+        function tareArm() {
+            fetch('/tare_position');
+            // Reset sliders and targets to 0 after tare
+            document.getElementById('m1-target').innerText = '0.0';
+            document.getElementById('m2-target').innerText = '0.0';
+            document.getElementById('m1-slider').value = 0;
+            document.getElementById('m2-slider').value = 0;
+            // Update displays after tare
+            setTimeout(updateDisplays, 100);
+        }
+
+        function emergencyStop() {
+            fetch('/emergency_stop');
+            // Update displays after stop
+            setTimeout(updateDisplays, 100);
+        }
+
+        function updateDisplays() {
+            fetch('/get_angles')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.error) {
+                        document.getElementById('m1-current').innerText = data.current.m1.toFixed(1);
+                        document.getElementById('m1-target').innerText = data.target.m1.toFixed(1);
+                        document.getElementById('m2-current').innerText = data.current.m2.toFixed(1);
+                        document.getElementById('m2-target').innerText = data.target.m2.toFixed(1);
+                        document.getElementById('motor-log').innerText = `Arm at ${data.current.m1.toFixed(1)}° (target ${data.target.m1.toFixed(1)}°), ${data.current.m2.toFixed(1)}° (target ${data.target.m2.toFixed(1)}°)`;
+                        // Update visualization with current angles
+                        m1_angle = data.current.m1;
+                        m2_angle = data.current.m2;
+                        drawArm();
+                    }
+                });
+        }
+
+        // Initialize
+        drawArm();
+
+        // Poll angles every 500ms
+        setInterval(updateDisplays, 500);
+
+        // Slider events
+        document.getElementById('m1-slider').addEventListener('input', function() {
+            updateAngle('m1', parseInt(this.value));
+        });
+        document.getElementById('m2-slider').addEventListener('input', function() {
+            updateAngle('m2', parseInt(this.value));
+        });
+
+        // --- DICOM JS ---
+        function toggleDetection() {
+            fetch('/toggle_detection')
+                .then(r => r.json())
+                .then(data => {
+                    const btn = document.getElementById('detection-btn');
+                    btn.innerText = data.enabled ? 'Disable Face Tracking' : 'Enable Face Tracking';
+                    btn.style.backgroundColor = data.enabled ? '#dc3545' : '#28a745';
+                });
+        }
+
+        function toggleAnomalyDetection() {
+            fetch('/toggle_anomaly_detection')
+                .then(r => r.json())
+                .then(data => {
+                    const btn = document.getElementById('anomaly-btn');
+                    btn.innerText = data.enabled ? 'Disable Anomaly Detection' : 'Enable Anomaly Detection';
+                    btn.style.backgroundColor = data.enabled ? '#dc3545' : '#ffc107';
+                });
+        }
+
+        function setDetectionMode() {
+            const mode = document.getElementById('detection-mode').value;
+            fetch('/set_detection_mode', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: mode})
+            });
+            // Update button text based on mode
+            const btn = document.getElementById('detection-btn');
+            const isEnabled = btn.innerText.startsWith('Disable');
+            btn.innerText = isEnabled ? 'Disable Face Tracking' : 'Enable Face Tracking';
+        }
+
+        function capture() {
+            const name = document.getElementById('p_name').value;
+            const age = document.getElementById('p_age').value;
+            const id = document.getElementById('p_id').value;
+            const sex = document.getElementById('p_sex').value;
+            if(!name || !id) { alert("Missing Patient Info"); return; }
+
+            document.getElementById('dicom-log').innerText = "Processing...";
+            fetch('/save_dicom', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({patient_name: name, patient_age: age, patient_id: id, patient_sex: sex})
+            }).then(r => r.json()).then(d => {
+                document.getElementById('dicom-log').innerText = d.success ? "Saved: "+d.filename : "Error: "+d.error;
+            });
+        }
+
+        // --- TEMI JS ---
+        function initTemi() {
+            fetch('/temi/info')
+                .then(r => r.json())
+                .then(data => {
+                    const log = document.getElementById('temi-log');
+                    const sel = document.getElementById('temi-locations');
+
+                    if(!data.available) {
+                        log.innerText = "Temi Not Connected";
+                        return;
+                    }
+
+                    log.innerText = "Temi Connected";
+                    sel.innerHTML = ""; // Clear
+                    data.locations.forEach(loc => {
+                        let opt = document.createElement('option');
+                        opt.value = loc;
+                        opt.innerText = loc;
+                        if(loc === data.current_location) opt.selected = true;
+                        sel.appendChild(opt);
+                    });
+                });
+        }
+
+        function temiSpeak() {
+            const txt = document.getElementById('temi-tts').value;
+            fetch('/temi/tts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text: txt})
+            });
+        }
+
+        function temiGoto() {
+            const loc = document.getElementById('temi-locations').value;
+            document.getElementById('temi-log').innerText = "Going to " + loc;
+            fetch('/temi/goto', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({location: loc})
+            });
+        }
+
+        function temiRotate(angle) {
+            fetch('/temi/rotate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({angle: angle})
+            });
+        }
+
+        // --- QR Scanning ---
+        let qrStream = null;
+        let qrScanning = false;
+
+        function scanQR() {
+            if (qrScanning) return;
+            qrScanning = true;
+            const videoFeed = document.querySelector('img[src*="video_feed"]');
+            const canvas = document.getElementById('qr-canvas');
+            const ctx = canvas.getContext('2d');
+
+            if (!videoFeed) {
+                alert('Video feed not found.');
+                qrScanning = false;
+                return;
+            }
+
+            // Start timeout for no detection
+            setTimeout(() => {
+                if (qrScanning) {
+                    stopScan();
+                    alert('No QR code detected. Please try again.');
+                }
+            }, 10000); // 10 seconds
+
+            scanLoop();
+
+            function scanLoop() {
+                if (!qrScanning) return;
+                // Draw the video feed image to canvas
+                canvas.width = videoFeed.naturalWidth || 640;
+                canvas.height = videoFeed.naturalHeight || 480;
+                ctx.drawImage(videoFeed, 0, 0, canvas.width, canvas.height);
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code) {
+                    // Parse QR: name,ageGender,patientID
+                    const parts = code.data.split(',');
+                    if (parts.length >= 3) {
+                        const name = parts[0].trim();
+                        const ageGender = parts[1].trim();
+                        const patientID = parts[2].trim();
+                        
+                        // Extract age and gender from ageGender (e.g., "21F" -> age=21, gender=F)
+                        const age = ageGender.slice(0, -1);
+                        const gender = ageGender.slice(-1).toUpperCase();
+                        
+                        // Validate
+                        if (!isNaN(age) && (gender === 'M' || gender === 'F')) {
+                            document.getElementById('p_name').value = name;
+                            document.getElementById('p_age').value = age;
+                            document.getElementById('p_id').value = patientID;
+                            document.getElementById('p_sex').value = gender;
+                            updatePatientSummary();
+                            stopScan();
+                        } else {
+                            alert('Invalid QR code format. Age should be number followed by M or F.');
+                            stopScan();
+                        }
+                    } else {
+                        alert('Invalid QR code format. Expected: name,ageGender,patientID');
+                        stopScan();
+                    }
+                } else {
+                    // Continue scanning
+                    setTimeout(scanLoop, 500); // Check every 500ms
+                }
+            }
+        }
+
+        function stopScan() {
+            qrScanning = false;
+        }
+
+        function updatePatientSummary() {
+            const name = document.getElementById('p_name').value;
+            const age = document.getElementById('p_age').value;
+            const id = document.getElementById('p_id').value;
+            const sex = document.getElementById('p_sex').value;
+            const summary = document.getElementById('patient-summary');
+            if (name || age || id) {
+                summary.innerText = `Patient: ${name || 'N/A'}, Age: ${age || 'N/A'}, ID: ${id || 'N/A'}, Sex: ${sex === 'M' ? 'Male' : sex === 'F' ? 'Female' : 'Other'}`;
+            } else {
+                summary.innerText = 'No patient data loaded';
+            }
+        }
+
+        function clearPatientData() {
+            document.getElementById('p_name').value = '';
+            document.getElementById('p_age').value = '';
+            document.getElementById('p_id').value = '';
+            document.getElementById('p_sex').value = 'O';
+            updatePatientSummary();
+        }
+
+        // --- Joystick handling ---
+        (function() {
+            const area = document.getElementById('joystick-area');
+            const knob = document.getElementById('joystick-knob');
+            const areaSize = 180;
+            const knobSize = 60;
+            const radius = (areaSize - knobSize) / 2;
+            let dragging = false;
+            let origin = {x: areaSize/2, y: areaSize/2};
+            let currentPos = {x: origin.x, y: origin.y};
+            let sendInterval = null;
+
+            function setKnobPosition(x, y) {
+                // clamp to circle
+                const dx = x - origin.x;
+                const dy = y - origin.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                let nx = dx, ny = dy;
+                if (dist > radius) {
+                    nx = dx * radius / dist;
+                    ny = dy * radius / dist;
+                }
+                knob.style.left = (origin.x + nx - knobSize/2) + 'px';
+                knob.style.top = (origin.y + ny - knobSize/2) + 'px';
+                currentPos.x = origin.x + nx;
+                currentPos.y = origin.y + ny;
+            }
+
+            function toNormalized(pos) {
+                // map from knob position to [-1,1]
+                const dx = (pos.x - origin.x) / radius; // -1..1 (right positive)
+                const dy = (origin.y - pos.y) / radius; // -1..1 (forward positive)
+                return {x: Math.max(-1, Math.min(1, dx)), y: Math.max(-1, Math.min(1, dy))};
+            }
+
+            function sendJoystick() {
+                const n = toNormalized(currentPos);
+                fetch('/temi/joystick', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({x: n.x, y: n.y})
+                });
+            }
+
+            function startSending() {
+                if (sendInterval) return;
+                sendInterval = setInterval(sendJoystick, 100); // 10Hz
+            }
+
+            function stopSending() {
+                if (sendInterval) {
+                    clearInterval(sendInterval);
+                    sendInterval = null;
+                }
+                // send stop command
+                fetch('/temi/joystick_stop', {method: 'POST'});
+            }
+
+            area.addEventListener('pointerdown', function(e) {
+                e.preventDefault();
+                dragging = true;
+                area.setPointerCapture(e.pointerId);
+                const rect = area.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                setKnobPosition(x, y);
+                startSending();
+            });
+
+            area.addEventListener('pointermove', function(e) {
+                if (!dragging) return;
+                const rect = area.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                setKnobPosition(x, y);
+            });
+
+            area.addEventListener('pointerup', function(e) {
+                dragging = false;
+                // reset knob to center
+                setKnobPosition(origin.x, origin.y);
+                stopSending();
+            });
+
+            // also handle pointercancel
+            area.addEventListener('pointercancel', function(e) {
+                dragging = false;
+                setKnobPosition(origin.x, origin.y);
+                stopSending();
+            });
+
+            // initialize center
+            setKnobPosition(origin.x, origin.y);
+        })();
+    </script>
+</body>
+</html>
