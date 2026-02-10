@@ -17,7 +17,7 @@ STEP_DELAY = 0.003
 # Temi Configuration
 MQTT_HOST = os.getenv('MQTT_HOST', 'localhost')
 MQTT_PORT = int(os.getenv('MQTT_PORT', 1883))
-TEMI_SERIAL = os.getenv('TEMI_SERIAL', '00121416079')
+TEMI_SERIAL = os.getenv('TEMI_SERIAL', 'xxxxxxxxxxx') # Add Temi Serial Here
 
 # Storage
 STORAGE_FOLDER = 'secure_dicom_storage'
